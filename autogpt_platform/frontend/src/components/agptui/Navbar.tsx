@@ -4,11 +4,12 @@ import { ProfilePopoutMenu } from "./ProfilePopoutMenu";
 import { IconType, IconLogIn, IconAutoGPTLogo } from "@/components/ui/icons";
 import { MobileNavBar } from "./MobileNavBar";
 import { Button } from "./Button";
-import CreditsCard from "./CreditsCard";
+import Wallet from "./Wallet";
 import { ProfileDetails } from "@/lib/autogpt-server-api/types";
 import { NavbarLink } from "./NavbarLink";
-import getServerUser from "@/lib/supabase/getServerUser";
+
 import BackendAPI from "@/lib/autogpt-server-api";
+import { getServerUser } from "@/lib/supabase/server/getServerUser";
 
 // Disable theme toggle for now
 // import { ThemeToggle } from "./ThemeToggle";
@@ -48,7 +49,7 @@ export const Navbar = async ({ links, menuItemGroups }: NavbarProps) => {
 
   return (
     <>
-      <nav className="sticky top-0 z-50 mx-[16px] hidden h-16 items-center justify-between rounded-bl-2xl rounded-br-2xl border border-white/50 bg-white/5 py-3 pl-6 pr-3 backdrop-blur-[26px] dark:border-gray-700 dark:bg-gray-900 md:inline-flex">
+      <nav className="sticky top-0 z-40 mx-[16px] hidden h-16 items-center justify-between rounded-bl-2xl rounded-br-2xl border border-white/50 bg-white/5 py-3 pl-6 pr-3 backdrop-blur-[26px] dark:border-gray-700 dark:bg-gray-900 md:inline-flex">
         <div className="flex items-center gap-11">
           <div className="relative h-10 w-[88.87px]">
             <IconAutoGPTLogo className="h-full w-full" />
@@ -61,7 +62,7 @@ export const Navbar = async ({ links, menuItemGroups }: NavbarProps) => {
         <div className="flex items-center gap-4">
           {isLoggedIn ? (
             <div className="flex items-center gap-4">
-              {profile && <CreditsCard />}
+              {profile && <Wallet />}
               <ProfilePopoutMenu
                 menuItemGroups={menuItemGroups}
                 userName={profile?.username}

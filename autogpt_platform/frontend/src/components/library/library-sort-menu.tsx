@@ -1,6 +1,6 @@
 import { useBackendAPI } from "@/lib/autogpt-server-api/context";
 import { LibraryAgentSortEnum } from "@/lib/autogpt-server-api/types";
-import { useLibraryPageContext } from "@/app/library/state-provider";
+import { useLibraryPageContext } from "@/app/(platform)/library/state-provider";
 import { ArrowDownNarrowWideIcon } from "lucide-react";
 import {
   Select,
@@ -19,7 +19,7 @@ export default function LibrarySortMenu(): React.ReactNode {
     setLibrarySort(value);
     setAgentLoading(true);
     await new Promise((resolve) => setTimeout(resolve, 1000));
-    let response = await api.listLibraryAgents({
+    const response = await api.listLibraryAgents({
       search_term: searchTerm,
       sort_by: value,
       page: 1,

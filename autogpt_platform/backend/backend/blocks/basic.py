@@ -4,19 +4,25 @@ from typing import Any, List
 from backend.data.block import Block, BlockCategory, BlockOutput, BlockSchema, BlockType
 from backend.data.model import SchemaField
 from backend.util import json
-from backend.util.file import MediaFile, store_media_file
+from backend.util.file import store_media_file
 from backend.util.mock import MockObject
-from backend.util.type import convert
+from backend.util.type import MediaFileType, convert
 
 
 class FileStoreBlock(Block):
     class Input(BlockSchema):
-        file_in: MediaFile = SchemaField(
+        file_in: MediaFileType = SchemaField(
             description="The file to store in the temporary directory, it can be a URL, data URI, or local path."
+        )
+        base_64: bool = SchemaField(
+            description="Whether produce an output in base64 format (not recommended, you can pass the string path just fine accross blocks).",
+            default=False,
+            advanced=True,
+            title="Produce Base64 Output",
         )
 
     class Output(BlockSchema):
-        file_out: MediaFile = SchemaField(
+        file_out: MediaFileType = SchemaField(
             description="The relative path to the stored file in the temporary directory."
         )
 
@@ -30,19 +36,18 @@ class FileStoreBlock(Block):
             static_output=True,
         )
 
-    def run(
+    async def run(
         self,
         input_data: Input,
         *,
         graph_exec_id: str,
         **kwargs,
     ) -> BlockOutput:
-        file_path = store_media_file(
+        yield "file_out", await store_media_file(
             graph_exec_id=graph_exec_id,
             file=input_data.file_in,
-            return_content=False,
+            return_content=input_data.base_64,
         )
-        yield "file_out", file_path
 
 
 class StoreValueBlock(Block):
@@ -84,8 +89,35 @@ class StoreValueBlock(Block):
             static_output=True,
         )
 
-    def run(self, input_data: Input, **kwargs) -> BlockOutput:
+    async def run(self, input_data: Input, **kwargs) -> BlockOutput:
         yield "output", input_data.data or input_data.input
+
+
+class PrintToConsoleBlock(Block):
+    class Input(BlockSchema):
+        text: Any = SchemaField(description="The data to print to the console.")
+
+    class Output(BlockSchema):
+        output: Any = SchemaField(description="The data printed to the console.")
+        status: str = SchemaField(description="The status of the print operation.")
+
+    def __init__(self):
+        super().__init__(
+            id="f3b1c1b2-4c4f-4f0d-8d2f-4c4f0d8d2f4c",
+            description="Print the given text to the console, this is used for a debugging purpose.",
+            categories={BlockCategory.BASIC},
+            input_schema=PrintToConsoleBlock.Input,
+            output_schema=PrintToConsoleBlock.Output,
+            test_input={"text": "Hello, World!"},
+            test_output=[
+                ("output", "Hello, World!"),
+                ("status", "printed"),
+            ],
+        )
+
+    async def run(self, input_data: Input, **kwargs) -> BlockOutput:
+        yield "output", input_data.text
+        yield "status", "printed"
 
 
 class FindInDictionaryBlock(Block):
@@ -124,7 +156,7 @@ class FindInDictionaryBlock(Block):
             categories={BlockCategory.BASIC},
         )
 
-    def run(self, input_data: Input, **kwargs) -> BlockOutput:
+    async def run(self, input_data: Input, **kwargs) -> BlockOutput:
         obj = input_data.input
         key = input_data.key
 
@@ -151,7 +183,7 @@ class FindInDictionaryBlock(Block):
 class AddToDictionaryBlock(Block):
     class Input(BlockSchema):
         dictionary: dict[Any, Any] = SchemaField(
-            default={},
+            default_factory=dict,
             description="The dictionary to add the entry to. If not provided, a new dictionary will be created.",
         )
         key: str = SchemaField(
@@ -167,7 +199,7 @@ class AddToDictionaryBlock(Block):
             advanced=False,
         )
         entries: dict[Any, Any] = SchemaField(
-            default={},
+            default_factory=dict,
             description="The entries to add to the dictionary. This is the batch version of the `key` and `value` fields.",
             advanced=True,
         )
@@ -214,7 +246,7 @@ class AddToDictionaryBlock(Block):
             ],
         )
 
-    def run(self, input_data: Input, **kwargs) -> BlockOutput:
+    async def run(self, input_data: Input, **kwargs) -> BlockOutput:
         updated_dict = input_data.dictionary.copy()
 
         if input_data.value is not None and input_data.key:
@@ -229,7 +261,7 @@ class AddToDictionaryBlock(Block):
 class AddToListBlock(Block):
     class Input(BlockSchema):
         list: List[Any] = SchemaField(
-            default=[],
+            default_factory=list,
             advanced=False,
             description="The list to add the entry to. If not provided, a new list will be created.",
         )
@@ -239,7 +271,7 @@ class AddToListBlock(Block):
             default=None,
         )
         entries: List[Any] = SchemaField(
-            default=[],
+            default_factory=lambda: list(),
             description="The entries to add to the list. This is the batch version of the `entry` field.",
             advanced=True,
         )
@@ -292,7 +324,7 @@ class AddToListBlock(Block):
             ],
         )
 
-    def run(self, input_data: Input, **kwargs) -> BlockOutput:
+    async def run(self, input_data: Input, **kwargs) -> BlockOutput:
         entries_added = input_data.entries.copy()
         if input_data.entry:
             entries_added.append(input_data.entry)
@@ -339,7 +371,7 @@ class FindInListBlock(Block):
             ],
         )
 
-    def run(self, input_data: Input, **kwargs) -> BlockOutput:
+    async def run(self, input_data: Input, **kwargs) -> BlockOutput:
         try:
             yield "index", input_data.list.index(input_data.value)
             yield "found", True
@@ -369,7 +401,7 @@ class NoteBlock(Block):
             block_type=BlockType.NOTE,
         )
 
-    def run(self, input_data: Input, **kwargs) -> BlockOutput:
+    async def run(self, input_data: Input, **kwargs) -> BlockOutput:
         yield "output", input_data.text
 
 
@@ -415,7 +447,7 @@ class CreateDictionaryBlock(Block):
             ],
         )
 
-    def run(self, input_data: Input, **kwargs) -> BlockOutput:
+    async def run(self, input_data: Input, **kwargs) -> BlockOutput:
         try:
             # The values are already validated by Pydantic schema
             yield "dictionary", input_data.values
@@ -428,6 +460,11 @@ class CreateListBlock(Block):
         values: List[Any] = SchemaField(
             description="A list of values to be combined into a new list.",
             placeholder="e.g., ['Alice', 25, True]",
+        )
+        max_size: int | None = SchemaField(
+            default=None,
+            description="Maximum size of the list. If provided, the list will be yielded in chunks of this size.",
+            advanced=True,
         )
 
     class Output(BlockSchema):
@@ -463,10 +500,11 @@ class CreateListBlock(Block):
             ],
         )
 
-    def run(self, input_data: Input, **kwargs) -> BlockOutput:
+    async def run(self, input_data: Input, **kwargs) -> BlockOutput:
         try:
-            # The values are already validated by Pydantic schema
-            yield "list", input_data.values
+            max_size = input_data.max_size or len(input_data.values)
+            for i in range(0, len(input_data.values), max_size):
+                yield "list", input_data.values[i : i + max_size]
         except Exception as e:
             yield "error", f"Failed to create list: {str(e)}"
 
@@ -498,7 +536,7 @@ class UniversalTypeConverterBlock(Block):
             output_schema=UniversalTypeConverterBlock.Output,
         )
 
-    def run(self, input_data: Input, **kwargs) -> BlockOutput:
+    async def run(self, input_data: Input, **kwargs) -> BlockOutput:
         try:
             converted_value = convert(
                 input_data.value,

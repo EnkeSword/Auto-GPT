@@ -1,17 +1,31 @@
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel as OriginalBaseModel
+from pydantic import ConfigDict
 
 from backend.data.model import SchemaField
+
+
+class BaseModel(OriginalBaseModel):
+    def model_dump(self, *args, exclude: set[str] | None = None, **kwargs):
+        if exclude is None:
+            exclude = set("credentials")
+        else:
+            exclude.add("credentials")
+
+        kwargs.setdefault("exclude_none", True)
+        kwargs.setdefault("exclude_unset", True)
+        kwargs.setdefault("exclude_defaults", True)
+        return super().model_dump(*args, exclude=exclude, **kwargs)
 
 
 class PrimaryPhone(BaseModel):
     """A primary phone in Apollo"""
 
-    number: str
-    source: str
-    sanitized_number: str
+    number: str = ""
+    source: str = ""
+    sanitized_number: str = ""
 
 
 class SenorityLevels(str, Enum):
@@ -42,88 +56,88 @@ class ContactEmailStatuses(str, Enum):
 class RuleConfigStatus(BaseModel):
     """A rule config status in Apollo"""
 
-    _id: str
-    created_at: str
-    rule_action_config_id: str
-    rule_config_id: str
-    status_cd: str
-    updated_at: str
-    id: str
-    key: str
+    _id: str = ""
+    created_at: str = ""
+    rule_action_config_id: str = ""
+    rule_config_id: str = ""
+    status_cd: str = ""
+    updated_at: str = ""
+    id: str = ""
+    key: str = ""
 
 
 class ContactCampaignStatus(BaseModel):
     """A contact campaign status in Apollo"""
 
-    id: str
-    emailer_campaign_id: str
-    send_email_from_user_id: str
-    inactive_reason: str
-    status: str
-    added_at: str
-    added_by_user_id: str
-    finished_at: str
-    paused_at: str
-    auto_unpause_at: str
-    send_email_from_email_address: str
-    send_email_from_email_account_id: str
-    manually_set_unpause: str
-    failure_reason: str
-    current_step_id: str
-    in_response_to_emailer_message_id: str
-    cc_emails: str
-    bcc_emails: str
-    to_emails: str
+    id: str = ""
+    emailer_campaign_id: str = ""
+    send_email_from_user_id: str = ""
+    inactive_reason: str = ""
+    status: str = ""
+    added_at: str = ""
+    added_by_user_id: str = ""
+    finished_at: str = ""
+    paused_at: str = ""
+    auto_unpause_at: str = ""
+    send_email_from_email_address: str = ""
+    send_email_from_email_account_id: str = ""
+    manually_set_unpause: str = ""
+    failure_reason: str = ""
+    current_step_id: str = ""
+    in_response_to_emailer_message_id: str = ""
+    cc_emails: str = ""
+    bcc_emails: str = ""
+    to_emails: str = ""
 
 
 class Account(BaseModel):
     """An account in Apollo"""
 
-    id: str
-    name: str
-    website_url: str
-    blog_url: str
-    angellist_url: str
-    linkedin_url: str
-    twitter_url: str
-    facebook_url: str
-    primary_phone: PrimaryPhone
+    id: str = ""
+    name: str = ""
+    website_url: str = ""
+    blog_url: str = ""
+    angellist_url: str = ""
+    linkedin_url: str = ""
+    twitter_url: str = ""
+    facebook_url: str = ""
+    primary_phone: PrimaryPhone = PrimaryPhone()
     languages: list[str]
-    alexa_ranking: int
-    phone: str
-    linkedin_uid: str
-    founded_year: int
-    publicly_traded_symbol: str
-    publicly_traded_exchange: str
-    logo_url: str
-    chrunchbase_url: str
-    primary_domain: str
-    domain: str
-    team_id: str
-    organization_id: str
-    account_stage_id: str
-    source: str
-    original_source: str
-    creator_id: str
-    owner_id: str
-    created_at: str
-    phone_status: str
-    hubspot_id: str
-    salesforce_id: str
-    crm_owner_id: str
-    parent_account_id: str
-    sanitized_phone: str
+    alexa_ranking: int = 0
+    phone: str = ""
+    linkedin_uid: str = ""
+    founded_year: int = 0
+    publicly_traded_symbol: str = ""
+    publicly_traded_exchange: str = ""
+    logo_url: str = ""
+    chrunchbase_url: str = ""
+    primary_domain: str = ""
+    domain: str = ""
+    team_id: str = ""
+    organization_id: str = ""
+    account_stage_id: str = ""
+    source: str = ""
+    original_source: str = ""
+    creator_id: str = ""
+    owner_id: str = ""
+    created_at: str = ""
+    phone_status: str = ""
+    hubspot_id: str = ""
+    salesforce_id: str = ""
+    crm_owner_id: str = ""
+    parent_account_id: str = ""
+    sanitized_phone: str = ""
     # no listed type on the API docs
-    account_playbook_statues: list[Any]
-    account_rule_config_statuses: list[RuleConfigStatus]
-    existence_level: str
-    label_ids: list[str]
+    account_playbook_statues: list[Any] = []
+    account_rule_config_statuses: list[RuleConfigStatus] = []
+    existence_level: str = ""
+    label_ids: list[str] = []
     typed_custom_fields: Any
     custom_field_errors: Any
-    modality: str
-    source_display_name: str
-    salesforce_record_id: str
-    crm_record_url: str
+    modality: str = ""
+    source_display_name: str = ""
+    salesforce_record_id: str = ""
+    crm_record_url: str = ""
 
 
 class ContactEmail(BaseModel):
@@ -143,11 +157,12 @@ class ContactEmail(BaseModel):
 class EmploymentHistory(BaseModel):
     """An employment history in Apollo"""
 
-    class Config:
-        extra = "allow"
-        arbitrary_types_allowed = True
-        from_attributes = True
-        populate_by_name = True
+    model_config = ConfigDict(
+        extra="allow",
+        arbitrary_types_allowed=True,
+        from_attributes=True,
+        populate_by_name=True,
+    )
 
     _id: Optional[str] = None
     created_at: Optional[str] = None
@@ -188,11 +203,12 @@ class TypedCustomField(BaseModel):
 class Pagination(BaseModel):
     """Pagination in Apollo"""
 
-    class Config:
-        extra = "allow"  # Allow extra fields
-        arbitrary_types_allowed = True  # Allow any type
-        from_attributes = True  # Allow from_orm
-        populate_by_name = True  # Allow field aliases to work both ways
+    model_config = ConfigDict(
+        extra="allow",
+        arbitrary_types_allowed=True,
+        from_attributes=True,
+        populate_by_name=True,
+    )
 
     page: int = 0
     per_page: int = 0
@@ -203,7 +219,7 @@ class Pagination(BaseModel):
 class DialerFlags(BaseModel):
     """A dialer flags in Apollo"""
 
-    country_name: str
+    country_name: str = ""
     country_enabled: bool
     high_risk_calling_enabled: bool
     potential_high_risk_number: bool
@@ -230,11 +246,12 @@ class PhoneNumber(BaseModel):
 class Organization(BaseModel):
     """An organization in Apollo"""
 
-    class Config:
-        extra = "allow"
-        arbitrary_types_allowed = True
-        from_attributes = True
-        populate_by_name = True
+    model_config = ConfigDict(
+        extra="allow",
+        arbitrary_types_allowed=True,
+        from_attributes=True,
+        populate_by_name=True,
+    )
 
     id: Optional[str] = "N/A"
     name: Optional[str] = "N/A"
@@ -268,11 +285,12 @@ class Organization(BaseModel):
 class Contact(BaseModel):
     """A contact in Apollo"""
 
-    class Config:
-        extra = "allow"
-        arbitrary_types_allowed = True
-        from_attributes = True
-        populate_by_name = True
+    model_config = ConfigDict(
+        extra="allow",
+        arbitrary_types_allowed=True,
+        from_attributes=True,
+        populate_by_name=True,
+    )
 
     contact_roles: list[Any] = []
     id: Optional[str] = None
@@ -369,14 +387,14 @@ If a company has several office locations, results are still based on the headqu
 
 To exclude companies based on location, use the organization_not_locations parameter.
 """,
-        default=[],
+        default_factory=list,
     )
     organizations_not_locations: list[str] = SchemaField(
         description="""Exclude companies from search results based on the location of the company headquarters. You can use cities, US states, and countries as locations to exclude.
 
 This parameter is useful for ensuring you do not prospect in an undesirable territory. For example, if you use ireland as a value, no Ireland-based companies will appear in your search results.
 """,
-        default=[],
+        default_factory=list,
     )
     q_organization_keyword_tags: list[str] = SchemaField(
         description="""Filter search results based on keywords associated with companies. For example, you can enter mining as a value to return only companies that have an association with the mining industry."""
@@ -390,7 +408,7 @@ If the value you enter for this parameter does not match with a company's name, 
         description="""The Apollo IDs for the companies you want to include in your search results. Each company in the Apollo database is assigned a unique ID.
 
 To find IDs, identify the values for organization_id when you call this endpoint.""",
-        default=[],
+        default_factory=list,
     )
     max_results: int = SchemaField(
         description="""The maximum number of results to return. If you don't specify this parameter, the default is 100.""",
@@ -443,14 +461,14 @@ Results also include job titles with the same terms, even if they are not exact 
 
 Use this parameter in combination with the person_seniorities[] parameter to find people based on specific job functions and seniority levels.
 """,
-        default=[],
+        default_factory=list,
         placeholder="marketing manager",
     )
     person_locations: list[str] = SchemaField(
         description="""The location where people live. You can search across cities, US states, and countries.
 
 To find people based on the headquarters locations of their current employer, use the organization_locations parameter.""",
-        default=[],
+        default_factory=list,
     )
     person_seniorities: list[SenorityLevels] = SchemaField(
         description="""The job seniority that people hold within their current employer. This enables you to find people that currently hold positions at certain reporting levels, such as Director level or senior IC level.
@@ -460,7 +478,7 @@ For a person to be included in search results, they only need to match 1 of the 
 Searches only return results based on their current job title, so searching for Director-level employees only returns people that currently hold a Director-level title. If someone was previously a Director, but is currently a VP, they would not be included in your search results.
 
 Use this parameter in combination with the person_titles[] parameter to find people based on specific job functions and seniority levels.""",
-        default=[],
+        default_factory=list,
     )
     organization_locations: list[str] = SchemaField(
         description="""The location of the company headquarters for a person's current employer. You can search across cities, US states, and countries.
@@ -468,7 +486,7 @@ Use this parameter in combination with the person_titles[] parameter to find peo
 If a company has several office locations, results are still based on the headquarters location. For example, if you search chicago but a company's HQ location is in boston, people that work for the Boston-based company will not appear in your results, even if they match other parameters.
 
 To find people based on their personal location, use the person_locations parameter.""",
-        default=[],
+        default_factory=list,
     )
     q_organization_domains: list[str] = SchemaField(
         description="""The domain name for the person's employer. This can be the current employer or a previous employer. Do not include www., the @ symbol, or similar.
@@ -476,23 +494,23 @@ To find people based on their personal location, use the person_locations parame
 You can add multiple domains to search across companies.
 
   Examples: apollo.io and microsoft.com""",
-        default=[],
+        default_factory=list,
     )
     contact_email_statuses: list[ContactEmailStatuses] = SchemaField(
         description="""The email statuses for the people you want to find. You can add multiple statuses to expand your search.""",
-        default=[],
+        default_factory=list,
     )
     organization_ids: list[str] = SchemaField(
         description="""The Apollo IDs for the companies (employers) you want to include in your search results. Each company in the Apollo database is assigned a unique ID.
 
 To find IDs, call the Organization Search endpoint and identify the values for organization_id.""",
-        default=[],
+        default_factory=list,
     )
     organization_num_empoloyees_range: list[int] = SchemaField(
         description="""The number range of employees working for the company. This enables you to find companies based on headcount. You can add multiple ranges to expand your search results.
 
 Each range you add needs to be a string, with the upper and lower numbers of the range separated only by a comma.""",
-        default=[],
+        default_factory=list,
     )
     q_keywords: str = SchemaField(
         description="""A string of words over which we want to filter the results""",
@@ -522,11 +540,12 @@ Use the page parameter to search the different pages of data.""",
 class SearchPeopleResponse(BaseModel):
     """Response from Apollo's search people API"""
 
-    class Config:
-        extra = "allow"  # Allow extra fields
-        arbitrary_types_allowed = True  # Allow any type
-        from_attributes = True  # Allow from_orm
-        populate_by_name = True  # Allow field aliases to work both ways
+    model_config = ConfigDict(
+        extra="allow",
+        arbitrary_types_allowed=True,
+        from_attributes=True,
+        populate_by_name=True,
+    )
 
     breadcrumbs: list[Breadcrumb] = []
     partial_results_only: bool = True

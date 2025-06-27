@@ -1,31 +1,17 @@
 import React from "react";
 import type { Metadata } from "next";
-import { Inter, Poppins } from "next/font/google";
-import { GoogleAnalytics } from "@next/third-parties/google";
-import { GeistSans } from "geist/font/sans";
-import { GeistMono } from "geist/font/mono";
-import { headers } from "next/headers";
+import { fonts } from "@/components/styles/fonts";
 
-import { cn } from "@/lib/utils";
 import "./globals.css";
 
-import { Navbar } from "@/components/agptui/Navbar";
 import { Toaster } from "@/components/ui/toaster";
-import { IconType } from "@/components/ui/icons";
 import { Providers } from "@/app/providers";
 import TallyPopupSimple from "@/components/TallyPopup";
-import OttoChatWidget from "@/components/OttoChatWidget";
-
-const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
-
-const poppins = Poppins({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-  variable: "--font-poppins",
-});
+import { GoogleAnalytics } from "@/components/analytics/google-analytics";
+import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 
 export const metadata: Metadata = {
-  title: "NextGen AutoGPT",
+  title: "AutoGPT Platform",
   description: "Your one stop shop to creating AI Agents",
 };
 
@@ -34,20 +20,18 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const pathname = headers().get("x-current-path");
-  const isOnboarding = pathname?.startsWith("/onboarding");
-
   return (
     <html
       lang="en"
-      className={`${poppins.variable} ${GeistSans.variable} ${GeistMono.variable} ${inter.variable}`}
+      className={`${fonts.poppins.variable} ${fonts.sans.variable} ${fonts.mono.variable}`}
+      suppressHydrationWarning
     >
-      <body
-        className={cn(
-          "bg-neutral-50 antialiased transition-colors",
-          inter.className,
-        )}
-      >
+      <head>
+        <GoogleAnalytics
+          gaId={process.env.GA_MEASUREMENT_ID || "G-FH2XK2W4GN"} // This is the measurement Id for the Google Analytics dev project
+        />
+      </head>
+      <body>
         <Providers
           attribute="class"
           defaultTheme="light"
@@ -56,76 +40,20 @@ export default async function RootLayout({
           disableTransitionOnChange
         >
           <div className="flex min-h-screen flex-col items-stretch justify-items-stretch">
-            {!isOnboarding && (
-              <Navbar
-                links={[
-                  {
-                    name: "Marketplace",
-                    href: "/marketplace",
-                  },
-                  {
-                    name: "Library",
-                    href: "/library",
-                  },
-                  {
-                    name: "Build",
-                    href: "/build",
-                  },
-                ]}
-                menuItemGroups={[
-                  {
-                    items: [
-                      {
-                        icon: IconType.Edit,
-                        text: "Edit profile",
-                        href: "/profile",
-                      },
-                    ],
-                  },
-                  {
-                    items: [
-                      {
-                        icon: IconType.LayoutDashboard,
-                        text: "Creator Dashboard",
-                        href: "/profile/dashboard",
-                      },
-                      {
-                        icon: IconType.UploadCloud,
-                        text: "Publish an agent",
-                      },
-                    ],
-                  },
-                  {
-                    items: [
-                      {
-                        icon: IconType.Settings,
-                        text: "Settings",
-                        href: "/profile/settings",
-                      },
-                    ],
-                  },
-                  {
-                    items: [
-                      {
-                        icon: IconType.LogOut,
-                        text: "Log out",
-                      },
-                    ],
-                  },
-                ]}
+            {children}
+            <TallyPopupSimple />
+
+            {/* React Query DevTools is only available in development */}
+            {process.env.NEXT_PUBLIC_REACT_QUERY_DEVTOOL && (
+              <ReactQueryDevtools
+                initialIsOpen={false}
+                buttonPosition={"bottom-left"}
               />
             )}
-            <main className="w-full flex-grow">{children}</main>
-            <TallyPopupSimple />
-            <OttoChatWidget />
           </div>
           <Toaster />
         </Providers>
       </body>
-
-      <GoogleAnalytics
-        gaId={process.env.GA_MEASUREMENT_ID || "G-FH2XK2W4GN"} // This is the measurement Id for the Google Analytics dev project
-      />
     </html>
   );
 }

@@ -27,7 +27,7 @@ export const FeaturedAgentCard: React.FC<FeaturedStoreCardProps> = ({
       data-testid="featured-store-card"
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
-      className={`flex h-full flex-col ${backgroundColor}`}
+      className={`flex h-full flex-col ${backgroundColor} rounded-[1.5rem] border-none`}
     >
       <CardHeader>
         <CardTitle className="line-clamp-2 text-base sm:text-xl">
@@ -40,7 +40,7 @@ export const FeaturedAgentCard: React.FC<FeaturedStoreCardProps> = ({
       <CardContent className="flex-1 p-4">
         <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl">
           <Image
-            src={agent.agent_image || "/AUTOgpt_Logo_dark.png"}
+            src={agent.agent_image || "/autogpt-logo-dark-bg.png"}
             alt={`${agent.agent_name} preview`}
             fill
             sizes="100%"

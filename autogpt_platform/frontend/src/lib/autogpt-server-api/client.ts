@@ -1,5 +1,8 @@
-import { SupabaseClient } from "@supabase/supabase-js";
-import {
+import { getServerSupabase } from "@/lib/supabase/server/getServerSupabase";
+import { createBrowserClient } from "@supabase/ssr";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type {
+  AddUserCreditsResponse,
   AnalyticsDetails,
   AnalyticsMetrics,
   APIKey,
@@ -7,12 +10,12 @@ import {
   APIKeyPermission,
   Block,
   CreateAPIKeyResponse,
-  CreateLibraryAgentPresetRequest,
   CreatorDetails,
   CreatorsResponse,
   Credentials,
   CredentialsDeleteNeedConfirmationResponse,
   CredentialsDeleteResponse,
+  CredentialsMetaInput,
   CredentialsMetaResponse,
   Graph,
   GraphCreatable,
@@ -25,15 +28,22 @@ import {
   LibraryAgent,
   LibraryAgentID,
   LibraryAgentPreset,
+  LibraryAgentPresetCreatable,
+  LibraryAgentPresetCreatableFromGraphExecution,
+  LibraryAgentPresetID,
   LibraryAgentPresetResponse,
+  LibraryAgentPresetUpdatable,
   LibraryAgentResponse,
   LibraryAgentSortEnum,
   MyAgentsResponse,
   NodeExecutionResult,
   NotificationPreference,
   NotificationPreferenceDTO,
+  OttoQuery,
+  OttoResponse,
   ProfileDetails,
   RefundRequest,
+  ReviewSubmissionRequest,
   Schedule,
   ScheduleCreatable,
   ScheduleID,
@@ -45,17 +55,13 @@ import {
   StoreSubmission,
   StoreSubmissionRequest,
   StoreSubmissionsResponse,
+  SubmissionStatus,
   TransactionHistory,
   User,
-  UserPasswordCredentials,
-  OttoQuery,
-  OttoResponse,
   UserOnboarding,
-  ReviewSubmissionRequest,
-  SubmissionStatus,
+  UserPasswordCredentials,
+  UsersBalanceHistoryResponse,
 } from "./types";
-import { createBrowserClient } from "@supabase/ssr";
-import getServerSupabase from "../supabase/getServerSupabase";
 
 const isClient = typeof window !== "undefined";
 
@@ -64,11 +70,14 @@ export default class BackendAPI {
   private wsUrl: string;
   private webSocket: WebSocket | null = null;
   private wsConnecting: Promise<void> | null = null;
+  private wsOnConnectHandlers: Set<() => void> = new Set();
+  private wsOnDisconnectHandlers: Set<() => void> = new Set();
   private wsMessageHandlers: Record<string, Set<(data: any) => void>> = {};
-  heartbeatInterval: number | null = null;
-  readonly HEARTBEAT_INTERVAL = 10_0000; // 100 seconds
+
+  readonly HEARTBEAT_INTERVAL = 100_000; // 100 seconds
   readonly HEARTBEAT_TIMEOUT = 10_000; // 10 seconds
-  heartbeatTimeoutId: number | null = null;
+  heartbeatIntervalID: number | null = null;
+  heartbeatTimeoutID: number | null = null;
 
   constructor(
     baseUrl: string = process.env.NEXT_PUBLIC_AGPT_SERVER_URL ||
@@ -80,21 +89,23 @@ export default class BackendAPI {
     this.wsUrl = wsUrl;
   }
 
-  private get supabaseClient(): SupabaseClient | null {
+  private async getSupabaseClient(): Promise<SupabaseClient | null> {
     return isClient
       ? createBrowserClient(
           process.env.NEXT_PUBLIC_SUPABASE_URL!,
           process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+          { isSingleton: true },
         )
-      : getServerSupabase();
+      : await getServerSupabase();
   }
 
   async isAuthenticated(): Promise<boolean> {
-    if (!this.supabaseClient) return false;
+    const supabaseClient = await this.getSupabaseClient();
+    if (!supabaseClient) return false;
     const {
-      data: { user },
-    } = await this.supabaseClient?.auth.getUser();
-    return user != null;
+      data: { session },
+    } = await supabaseClient.auth.getSession();
+    return session != null;
   }
 
   createUser(): Promise<User> {
@@ -112,7 +123,7 @@ export default class BackendAPI {
   getUserCredit(): Promise<{ credits: number }> {
     try {
       return this._get("/credits");
-    } catch (error) {
+    } catch {
       return Promise.resolve({ credits: 0 });
     }
   }
@@ -180,7 +191,9 @@ export default class BackendAPI {
     return this._get("/onboarding");
   }
 
-  updateUserOnboarding(onboarding: Partial<UserOnboarding>): Promise<void> {
+  updateUserOnboarding(
+    onboarding: Omit<Partial<UserOnboarding>, "rewardedFor">,
+  ): Promise<void> {
     return this._request("PATCH", "/onboarding", onboarding);
   }
 
@@ -205,19 +218,21 @@ export default class BackendAPI {
     return this._get(`/graphs`);
   }
 
-  getGraph(
+  async getGraph(
     id: GraphID,
     version?: number,
     for_export?: boolean,
   ): Promise<Graph> {
-    let query: Record<string, any> = {};
+    const query: Record<string, any> = {};
     if (version !== undefined) {
       query["version"] = version;
     }
     if (for_export !== undefined) {
       query["for_export"] = for_export;
     }
-    return this._get(`/graphs/${id}`, query);
+    const graph = await this._get(`/graphs/${id}`, query);
+    if (for_export) delete graph.user_id;
+    return graph;
   }
 
   getGraphAllVersions(id: GraphID): Promise<Graph[]> {
@@ -225,7 +240,7 @@ export default class BackendAPI {
   }
 
   createGraph(graph: GraphCreatable): Promise<Graph> {
-    let requestBody = { graph } as GraphCreateRequestBody;
+    const requestBody = { graph } as GraphCreateRequestBody;
 
     return this._request("POST", "/graphs", requestBody);
   }
@@ -247,17 +262,25 @@ export default class BackendAPI {
   executeGraph(
     id: GraphID,
     version: number,
-    inputData: { [key: string]: any } = {},
+    inputs: { [key: string]: any } = {},
+    credentials_inputs: { [key: string]: CredentialsMetaInput } = {},
   ): Promise<{ graph_exec_id: GraphExecutionID }> {
-    return this._request("POST", `/graphs/${id}/execute/${version}`, inputData);
+    return this._request("POST", `/graphs/${id}/execute/${version}`, {
+      inputs,
+      credentials_inputs,
+    });
   }
 
   getExecutions(): Promise<GraphExecutionMeta[]> {
-    return this._get(`/executions`);
+    return this._get(`/executions`).then((results) =>
+      results.map(parseGraphExecutionTimestamps),
+    );
   }
 
   getGraphExecutions(graphID: GraphID): Promise<GraphExecutionMeta[]> {
-    return this._get(`/graphs/${graphID}/executions`);
+    return this._get(`/graphs/${graphID}/executions`).then((results) =>
+      results.map(parseGraphExecutionTimestamps),
+    );
   }
 
   async getGraphExecutionInfo(
@@ -265,10 +288,7 @@ export default class BackendAPI {
     runID: GraphExecutionID,
   ): Promise<GraphExecution> {
     const result = await this._get(`/graphs/${graphID}/executions/${runID}`);
-    result.node_executions = result.node_executions.map(
-      parseNodeExecutionResultTimestamps,
-    );
-    return result;
+    return parseGraphExecutionTimestamps<GraphExecution>(result);
   }
 
   async stopGraphExecution(
@@ -279,10 +299,7 @@ export default class BackendAPI {
       "POST",
       `/graphs/${graphID}/executions/${runID}/stop`,
     );
-    result.node_executions = result.node_executions.map(
-      parseNodeExecutionResultTimestamps,
-    );
-    return result;
+    return parseGraphExecutionTimestamps<GraphExecution>(result);
   }
 
   async deleteGraphExecution(runID: GraphExecutionID): Promise<void> {
@@ -532,9 +549,9 @@ export default class BackendAPI {
     return this._get(url);
   }
 
-  ////////////////////////////////////////
-  ////////////// Admin API ///////////////
-  ////////////////////////////////////////
+  /////////////////////////////////////////
+  /////////// Admin API ///////////////////
+  /////////////////////////////////////////
 
   getAdminListingsWithVersions(params?: {
     status?: SubmissionStatus;
@@ -556,6 +573,32 @@ export default class BackendAPI {
     );
   }
 
+  addUserCredits(
+    user_id: string,
+    amount: number,
+    comments: string,
+  ): Promise<AddUserCreditsResponse> {
+    return this._request("POST", "/credits/admin/add_credits", {
+      user_id,
+      amount,
+      comments,
+    });
+  }
+
+  getUsersHistory(params?: {
+    search?: string;
+    page?: number;
+    page_size?: number;
+  }): Promise<UsersBalanceHistoryResponse> {
+    return this._get("/credits/admin/users_history", params);
+  }
+
+  downloadStoreAgentAdmin(storeListingVersionId: string): Promise<BlobPart> {
+    const url = `/store/admin/submissions/download/${storeListingVersionId}`;
+
+    return this._get(url);
+  }
+
   ////////////////////////////////////////
   //////////// V2 LIBRARY API ////////////
   ////////////////////////////////////////
@@ -573,6 +616,12 @@ export default class BackendAPI {
     return this._get(`/library/agents/${id}`);
   }
 
+  getLibraryAgentByStoreListingVersionID(
+    storeListingVersionId: string,
+  ): Promise<LibraryAgent | null> {
+    return this._get(`/library/agents/marketplace/${storeListingVersionId}`);
+  }
+
   addMarketplaceAgentToLibrary(
     storeListingVersionID: string,
   ): Promise<LibraryAgent> {
@@ -581,56 +630,98 @@ export default class BackendAPI {
     });
   }
 
-  async updateLibraryAgent(
+  updateLibraryAgent(
     libraryAgentId: LibraryAgentID,
     params: {
       auto_update_version?: boolean;
       is_favorite?: boolean;
       is_archived?: boolean;
-      is_deleted?: boolean;
     },
-  ): Promise<void> {
-    await this._request("PUT", `/library/agents/${libraryAgentId}`, params);
+  ): Promise<LibraryAgent> {
+    return this._request("PATCH", `/library/agents/${libraryAgentId}`, params);
   }
 
-  listLibraryAgentPresets(params?: {
+  async deleteLibraryAgent(libraryAgentId: LibraryAgentID): Promise<void> {
+    await this._request("DELETE", `/library/agents/${libraryAgentId}`);
+  }
+
+  forkLibraryAgent(libraryAgentId: LibraryAgentID): Promise<LibraryAgent> {
+    return this._request("POST", `/library/agents/${libraryAgentId}/fork`);
+  }
+
+  async setupAgentTrigger(
+    libraryAgentID: LibraryAgentID,
+    params: {
+      name: string;
+      description?: string;
+      trigger_config: Record<string, any>;
+      agent_credentials: Record<string, CredentialsMetaInput>;
+    },
+  ): Promise<LibraryAgentPreset> {
+    return parseLibraryAgentPresetTimestamp(
+      await this._request(
+        "POST",
+        `/library/agents/${libraryAgentID}/setup-trigger`,
+        params,
+      ),
+    );
+  }
+
+  async listLibraryAgentPresets(params?: {
+    graph_id?: GraphID;
     page?: number;
     page_size?: number;
   }): Promise<LibraryAgentPresetResponse> {
-    return this._get("/library/presets", params);
+    const response: LibraryAgentPresetResponse = await this._get(
+      "/library/presets",
+      params,
+    );
+    return {
+      ...response,
+      presets: response.presets.map(parseLibraryAgentPresetTimestamp),
+    };
   }
 
-  getLibraryAgentPreset(presetId: string): Promise<LibraryAgentPreset> {
-    return this._get(`/library/presets/${presetId}`);
-  }
-
-  createLibraryAgentPreset(
-    preset: CreateLibraryAgentPresetRequest,
+  async getLibraryAgentPreset(
+    presetID: LibraryAgentPresetID,
   ): Promise<LibraryAgentPreset> {
-    return this._request("POST", "/library/presets", preset);
+    const preset = await this._get(`/library/presets/${presetID}`);
+    return parseLibraryAgentPresetTimestamp(preset);
   }
 
-  updateLibraryAgentPreset(
-    presetId: string,
-    preset: CreateLibraryAgentPresetRequest,
+  async createLibraryAgentPreset(
+    params:
+      | LibraryAgentPresetCreatable
+      | LibraryAgentPresetCreatableFromGraphExecution,
   ): Promise<LibraryAgentPreset> {
-    return this._request("PUT", `/library/presets/${presetId}`, preset);
+    const new_preset = await this._request("POST", "/library/presets", params);
+    return parseLibraryAgentPresetTimestamp(new_preset);
   }
 
-  async deleteLibraryAgentPreset(presetId: string): Promise<void> {
-    await this._request("DELETE", `/library/presets/${presetId}`);
+  async updateLibraryAgentPreset(
+    presetID: LibraryAgentPresetID,
+    partial_preset: LibraryAgentPresetUpdatable,
+  ): Promise<LibraryAgentPreset> {
+    const updated_preset = await this._request(
+      "PATCH",
+      `/library/presets/${presetID}`,
+      partial_preset,
+    );
+    return parseLibraryAgentPresetTimestamp(updated_preset);
+  }
+
+  async deleteLibraryAgentPreset(
+    presetID: LibraryAgentPresetID,
+  ): Promise<void> {
+    await this._request("DELETE", `/library/presets/${presetID}`);
   }
 
   executeLibraryAgentPreset(
-    presetId: string,
-    graphId: GraphID,
-    graphVersion: number,
-    nodeInput: { [key: string]: any },
-  ): Promise<{ id: string }> {
-    return this._request("POST", `/library/presets/${presetId}/execute`, {
-      graph_id: graphId,
-      graph_version: graphVersion,
-      node_input: nodeInput,
+    presetID: LibraryAgentPresetID,
+    inputs?: { [key: string]: any },
+  ): Promise<{ id: GraphExecutionID }> {
+    return this._request("POST", `/library/presets/${presetID}/execute`, {
+      inputs,
     });
   }
 
@@ -654,16 +745,20 @@ export default class BackendAPI {
     );
   }
 
+  //////////////////////////////////
+  ////////////// OTTO //////////////
+  //////////////////////////////////
+
+  async askOtto(query: OttoQuery): Promise<OttoResponse> {
+    return this._request("POST", "/otto/ask", query);
+  }
+
   ////////////////////////////////////////
   ////////// INTERNAL FUNCTIONS //////////
   ////////////////////////////////////////
 
   private _get(path: string, query?: Record<string, any>) {
     return this._request("GET", path, query);
-  }
-
-  async askOtto(query: OttoQuery): Promise<OttoResponse> {
-    return this._request("POST", "/otto/ask", query);
   }
 
   private async _uploadFile(path: string, file: File): Promise<string> {
@@ -673,9 +768,10 @@ export default class BackendAPI {
     const maxRetries = 3;
 
     while (retryCount < maxRetries) {
+      const supabaseClient = await this.getSupabaseClient();
       const {
         data: { session },
-      } = (await this.supabaseClient?.auth.getSession()) || {
+      } = (await supabaseClient?.auth.getSession()) || {
         data: { session: null },
       };
 
@@ -726,9 +822,10 @@ export default class BackendAPI {
     const maxRetries = 3;
 
     while (retryCount < maxRetries) {
+      const supabaseClient = await this.getSupabaseClient();
       const {
         data: { session },
-      } = (await this.supabaseClient?.auth.getSession()) || {
+      } = (await supabaseClient?.auth.getSession()) || {
         data: { session: null },
       };
 
@@ -792,7 +889,7 @@ export default class BackendAPI {
         } else {
           errorDetail = errorData.detail || response.statusText;
         }
-      } catch (e) {
+      } catch {
         errorDetail = response.statusText;
       }
 
@@ -825,6 +922,12 @@ export default class BackendAPI {
   subscribeToGraphExecution(graphExecID: GraphExecutionID): Promise<void> {
     return this.sendWebSocketMessage("subscribe_graph_execution", {
       graph_exec_id: graphExecID,
+    });
+  }
+
+  subscribeToGraphExecutions(graphID: GraphID): Promise<void> {
+    return this.sendWebSocketMessage("subscribe_graph_executions", {
+      graph_id: graphID,
     });
   }
 
@@ -863,59 +966,89 @@ export default class BackendAPI {
     return () => this.wsMessageHandlers[method].delete(handler);
   }
 
+  /**
+   * All handlers are invoked when the WebSocket (re)connects. If it's already connected
+   * when this function is called, the passed handler is invoked immediately.
+   *
+   * Use this hook to subscribe to topics and refresh state,
+   * to ensure re-subscription and re-sync on re-connect.
+   *
+   * @returns a detacher for the passed handler.
+   */
+  onWebSocketConnect(handler: () => void): () => void {
+    this.wsOnConnectHandlers.add(handler);
+
+    this.connectWebSocket();
+    if (this.webSocket?.readyState == WebSocket.OPEN) handler();
+
+    // Return detacher
+    return () => this.wsOnConnectHandlers.delete(handler);
+  }
+
+  /**
+   * All handlers are invoked when the WebSocket disconnects.
+   *
+   * @returns a detacher for the passed handler.
+   */
+  onWebSocketDisconnect(handler: () => void): () => void {
+    this.wsOnDisconnectHandlers.add(handler);
+
+    // Return detacher
+    return () => this.wsOnDisconnectHandlers.delete(handler);
+  }
+
   async connectWebSocket(): Promise<void> {
-    this.wsConnecting ??= new Promise(async (resolve, reject) => {
+    return (this.wsConnecting ??= new Promise(async (resolve, reject) => {
       try {
+        const supabaseClient = await this.getSupabaseClient();
         const token =
-          (await this.supabaseClient?.auth.getSession())?.data.session
+          (await supabaseClient?.auth.getSession())?.data.session
             ?.access_token || "";
         const wsUrlWithToken = `${this.wsUrl}?token=${token}`;
         this.webSocket = new WebSocket(wsUrlWithToken);
+        this.webSocket.state = "connecting";
 
         this.webSocket.onopen = () => {
+          this.webSocket!.state = "connected";
+          console.info("[BackendAPI] WebSocket connected to", this.wsUrl);
           this._startWSHeartbeat(); // Start heartbeat when connection opens
+          this.wsOnConnectHandlers.forEach((handler) => handler());
           resolve();
         };
 
         this.webSocket.onclose = (event) => {
-          console.warn("WebSocket connection closed", event);
+          if (this.webSocket?.state == "connecting") {
+            console.error(
+              `[BackendAPI] WebSocket failed to connect: ${event.reason}`,
+              event,
+            );
+          } else if (this.webSocket?.state == "connected") {
+            console.warn(
+              `[BackendAPI] WebSocket connection closed: ${event.reason}`,
+              event,
+            );
+          }
+          this.webSocket!.state = "closed";
+
           this._stopWSHeartbeat(); // Stop heartbeat when connection closes
           this.wsConnecting = null;
+          this.wsOnDisconnectHandlers.forEach((handler) => handler());
           // Attempt to reconnect after a delay
-          setTimeout(() => this.connectWebSocket(), 1000);
+          setTimeout(() => this.connectWebSocket().then(resolve), 1000);
         };
 
         this.webSocket.onerror = (error) => {
-          console.error("WebSocket error:", error);
-          this._stopWSHeartbeat(); // Stop heartbeat on error
-          this.wsConnecting = null;
-          reject(error);
+          if (this.webSocket?.state == "connected") {
+            console.error("[BackendAPI] WebSocket error:", error);
+          }
         };
 
-        this.webSocket.onmessage = (event) => {
-          const message: WebsocketMessage = JSON.parse(event.data);
-
-          // Handle heartbeat response
-          if (message.method === "heartbeat" && message.data === "pong") {
-            this._handleWSHeartbeatResponse();
-            return;
-          }
-
-          if (message.method === "node_execution_event") {
-            message.data = parseNodeExecutionResultTimestamps(message.data);
-          } else if (message.method == "graph_execution_event") {
-            message.data = parseGraphExecutionMetaTimestamps(message.data);
-          }
-          this.wsMessageHandlers[message.method]?.forEach((handler) =>
-            handler(message.data),
-          );
-        };
+        this.webSocket.onmessage = (event) => this._handleWSMessage(event);
       } catch (error) {
-        console.error("Error connecting to WebSocket:", error);
+        console.error("[BackendAPI] Error connecting to WebSocket:", error);
         reject(error);
       }
-    });
-    return this.wsConnecting;
+    }));
   }
 
   disconnectWebSocket() {
@@ -925,9 +1058,28 @@ export default class BackendAPI {
     }
   }
 
-  _startWSHeartbeat() {
+  private _handleWSMessage(event: MessageEvent): void {
+    const message: WebsocketMessage = JSON.parse(event.data);
+
+    // Handle heartbeat response
+    if (message.method === "heartbeat" && message.data === "pong") {
+      this._handleWSHeartbeatResponse();
+      return;
+    }
+
+    if (message.method === "node_execution_event") {
+      message.data = parseNodeExecutionResultTimestamps(message.data);
+    } else if (message.method == "graph_execution_event") {
+      message.data = parseGraphExecutionTimestamps(message.data);
+    }
+    this.wsMessageHandlers[message.method]?.forEach((handler) =>
+      handler(message.data),
+    );
+  }
+
+  private _startWSHeartbeat() {
     this._stopWSHeartbeat();
-    this.heartbeatInterval = window.setInterval(() => {
+    this.heartbeatIntervalID = window.setInterval(() => {
       if (this.webSocket?.readyState === WebSocket.OPEN) {
         this.webSocket.send(
           JSON.stringify({
@@ -937,7 +1089,7 @@ export default class BackendAPI {
           }),
         );
 
-        this.heartbeatTimeoutId = window.setTimeout(() => {
+        this.heartbeatTimeoutID = window.setTimeout(() => {
           console.warn("Heartbeat timeout - reconnecting");
           this.webSocket?.close();
           this.connectWebSocket();
@@ -946,22 +1098,28 @@ export default class BackendAPI {
     }, this.HEARTBEAT_INTERVAL);
   }
 
-  _stopWSHeartbeat() {
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
+  private _stopWSHeartbeat() {
+    if (this.heartbeatIntervalID) {
+      clearInterval(this.heartbeatIntervalID);
+      this.heartbeatIntervalID = null;
     }
-    if (this.heartbeatTimeoutId) {
-      clearTimeout(this.heartbeatTimeoutId);
-      this.heartbeatTimeoutId = null;
+    if (this.heartbeatTimeoutID) {
+      clearTimeout(this.heartbeatTimeoutID);
+      this.heartbeatTimeoutID = null;
     }
   }
 
-  _handleWSHeartbeatResponse() {
-    if (this.heartbeatTimeoutId) {
-      clearTimeout(this.heartbeatTimeoutId);
-      this.heartbeatTimeoutId = null;
+  private _handleWSHeartbeatResponse() {
+    if (this.heartbeatTimeoutID) {
+      clearTimeout(this.heartbeatTimeoutID);
+      this.heartbeatTimeoutID = null;
     }
+  }
+}
+
+declare global {
+  interface WebSocket {
+    state: "connecting" | "connected" | "closed";
   }
 }
 
@@ -973,7 +1131,8 @@ type GraphCreateRequestBody = {
 
 type WebsocketMessageTypeMap = {
   subscribe_graph_execution: { graph_exec_id: GraphExecutionID };
-  graph_execution_event: GraphExecutionMeta;
+  subscribe_graph_executions: { graph_id: GraphID };
+  graph_execution_event: GraphExecution;
   node_execution_event: NodeExecutionResult;
   heartbeat: "ping" | "pong";
 };
@@ -994,11 +1153,16 @@ type _PydanticValidationError = {
 
 /* *** HELPER FUNCTIONS *** */
 
-function parseGraphExecutionMetaTimestamps(result: any): GraphExecutionMeta {
-  return _parseObjectTimestamps<GraphExecutionMeta>(result, [
-    "started_at",
-    "ended_at",
-  ]);
+function parseGraphExecutionTimestamps<
+  T extends GraphExecutionMeta | GraphExecution,
+>(result: any): T {
+  const fixed = _parseObjectTimestamps<T>(result, ["started_at", "ended_at"]);
+  if ("node_executions" in fixed && fixed.node_executions) {
+    fixed.node_executions = fixed.node_executions.map(
+      parseNodeExecutionResultTimestamps,
+    );
+  }
+  return fixed;
 }
 
 function parseNodeExecutionResultTimestamps(result: any): NodeExecutionResult {
@@ -1012,6 +1176,10 @@ function parseNodeExecutionResultTimestamps(result: any): NodeExecutionResult {
 
 function parseScheduleTimestamp(result: any): Schedule {
   return _parseObjectTimestamps<Schedule>(result, ["next_run_time"]);
+}
+
+function parseLibraryAgentPresetTimestamp(result: any): LibraryAgentPreset {
+  return _parseObjectTimestamps<LibraryAgentPreset>(result, ["updated_at"]);
 }
 
 function _parseObjectTimestamps<T>(obj: any, keys: (keyof T)[]): T {

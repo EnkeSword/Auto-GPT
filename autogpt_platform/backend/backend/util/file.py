@@ -7,8 +7,9 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
-# This "requests" presumably has additional checks against internal networks for SSRF.
-from backend.util.request import requests
+from backend.util.request import Requests
+from backend.util.type import MediaFileType
+from backend.util.virus_scanner import scan_content_safe
 
 TEMP_DIR = Path(tempfile.gettempdir()).resolve()
 
@@ -29,30 +30,9 @@ def clean_exec_files(graph_exec_id: str, file: str = "") -> None:
         shutil.rmtree(exec_path)
 
 
-class MediaFile(str):
-    """
-    MediaFile is a string that represents a file. It can be one of the following:
-        - Data URI: base64 encoded media file. See https://developer.mozilla.org/en-US/docs/Web/URI/Schemes/data/
-        - URL: Media file hosted on the internet, it starts with http:// or https://.
-        - Local path (anything else): A temporary file path living within graph execution time.
-
-    Note: Replace this type alias into a proper class, when more information is needed.
-    """
-
-    @classmethod
-    def __get_pydantic_core_schema__(cls, source_type, handler):
-        return handler(str)
-
-    @classmethod
-    def __get_pydantic_json_schema__(cls, core_schema, handler):
-        json_schema = handler(core_schema)
-        json_schema["format"] = "file"
-        return json_schema
-
-
-def store_media_file(
-    graph_exec_id: str, file: MediaFile, return_content: bool = False
-) -> MediaFile:
+async def store_media_file(
+    graph_exec_id: str, file: MediaFileType, return_content: bool = False
+) -> MediaFileType:
     """
     Safely handle 'file' (a data URI, a URL, or a local path relative to {temp}/exec_file/{exec_id}),
     placing or verifying it under:
@@ -61,7 +41,7 @@ def store_media_file(
     If 'return_content=True', return a data URI (data:<mime>;base64,<content>).
     Otherwise, returns the file media path relative to the exec_id folder.
 
-    For each MediaFile type:
+    For each MediaFileType type:
     - Data URI:
       -> decode and store in a new random file in that folder
     - URL:
@@ -88,8 +68,7 @@ def store_media_file(
         return ext if ext else ".bin"
 
     def _file_to_data_uri(path: Path) -> str:
-        mime_type, _ = mimetypes.guess_type(path)
-        mime_type = mime_type or "application/octet-stream"
+        mime_type = get_mime_type(str(path))
         b64 = base64.b64encode(path.read_bytes()).decode("utf-8")
         return f"data:{mime_type};base64,{b64}"
 
@@ -127,7 +106,11 @@ def store_media_file(
         extension = _extension_from_mime(mime_type)
         filename = f"{uuid.uuid4()}{extension}"
         target_path = _ensure_inside_base(base_path / filename, base_path)
-        target_path.write_bytes(base64.b64decode(b64_content))
+        content = base64.b64decode(b64_content)
+
+        # Virus scan the base64 content before writing
+        await scan_content_safe(content, filename=filename)
+        target_path.write_bytes(content)
 
     elif file.startswith(("http://", "https://")):
         # URL
@@ -136,8 +119,10 @@ def store_media_file(
         target_path = _ensure_inside_base(base_path / filename, base_path)
 
         # Download and save
-        resp = requests.get(file)
-        resp.raise_for_status()
+        resp = await Requests().get(file)
+
+        # Virus scan the downloaded content before writing
+        await scan_content_safe(resp.content, filename=filename)
         target_path.write_bytes(resp.content)
 
     else:
@@ -148,6 +133,24 @@ def store_media_file(
 
     # Return result
     if return_content:
-        return MediaFile(_file_to_data_uri(target_path))
+        return MediaFileType(_file_to_data_uri(target_path))
     else:
-        return MediaFile(_strip_base_prefix(target_path, base_path))
+        return MediaFileType(_strip_base_prefix(target_path, base_path))
+
+
+def get_mime_type(file: str) -> str:
+    """
+    Get the MIME type of a file, whether it's a data URI, URL, or local path.
+    """
+    if file.startswith("data:"):
+        match = re.match(r"^data:([^;]+);base64,", file)
+        return match.group(1) if match else "application/octet-stream"
+
+    elif file.startswith(("http://", "https://")):
+        parsed_url = urlparse(file)
+        mime_type, _ = mimetypes.guess_type(parsed_url.path)
+        return mime_type or "application/octet-stream"
+
+    else:
+        mime_type, _ = mimetypes.guess_type(file)
+        return mime_type or "application/octet-stream"

@@ -46,24 +46,22 @@ async def execute_graph(
 
     # Execution queue should be empty
     logger.info("Waiting for execution to complete...")
-    result = await wait_execution(test_user.id, test_graph.id, graph_exec_id, 30)
+    result = await wait_execution(test_user.id, graph_exec_id, 30)
     logger.info(f"Execution completed with {len(result)} results")
     assert len(result) == num_execs
     return graph_exec_id
 
 
 async def assert_sample_graph_executions(
-    agent_server: AgentServer,
     test_graph: graph.Graph,
     test_user: User,
     graph_exec_id: str,
 ):
     logger.info(f"Checking execution results for graph {test_graph.id}")
-    graph_run = await agent_server.test_get_graph_run_results(
-        test_graph.id,
-        graph_exec_id,
-        test_user.id,
+    graph_run = await execution.get_graph_execution(
+        test_user.id, graph_exec_id, include_node_executions=True
     )
+    assert isinstance(graph_run, execution.GraphExecutionWithNodes)
 
     output_list = [{"result": ["Hello"]}, {"result": ["World"]}]
     input_list = [
@@ -129,7 +127,7 @@ async def assert_sample_graph_executions(
     assert exec.node_id == test_graph.nodes[3].id
 
 
-@pytest.mark.asyncio(scope="session")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_agent_execution(server: SpinTestServer):
     logger.info("Starting test_agent_execution")
     test_user = await create_test_user()
@@ -142,13 +140,11 @@ async def test_agent_execution(server: SpinTestServer):
         data,
         4,
     )
-    await assert_sample_graph_executions(
-        server.agent_server, test_graph, test_user, graph_exec_id
-    )
+    await assert_sample_graph_executions(test_graph, test_user, graph_exec_id)
     logger.info("Completed test_agent_execution")
 
 
-@pytest.mark.asyncio(scope="session")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_input_pin_always_waited(server: SpinTestServer):
     """
     This test is asserting that the input pin should always be waited for the execution,
@@ -203,9 +199,10 @@ async def test_input_pin_always_waited(server: SpinTestServer):
     )
 
     logger.info("Checking execution results")
-    graph_exec = await server.agent_server.test_get_graph_run_results(
-        test_graph.id, graph_exec_id, test_user.id
+    graph_exec = await execution.get_graph_execution(
+        test_user.id, graph_exec_id, include_node_executions=True
     )
+    assert isinstance(graph_exec, execution.GraphExecutionWithNodes)
     assert len(graph_exec.node_executions) == 3
     # FindInDictionaryBlock should wait for the input pin to be provided,
     # Hence executing extraction of "key" from {"key1": "value1", "key2": "value2"}
@@ -214,7 +211,7 @@ async def test_input_pin_always_waited(server: SpinTestServer):
     logger.info("Completed test_input_pin_always_waited")
 
 
-@pytest.mark.asyncio(scope="session")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_static_input_link_on_graph(server: SpinTestServer):
     """
     This test is asserting the behaviour of static input link, e.g: reusable input link.
@@ -286,9 +283,10 @@ async def test_static_input_link_on_graph(server: SpinTestServer):
         server.agent_server, test_graph, test_user, {}, 8
     )
     logger.info("Checking execution results")
-    graph_exec = await server.agent_server.test_get_graph_run_results(
-        test_graph.id, graph_exec_id, test_user.id
+    graph_exec = await execution.get_graph_execution(
+        test_user.id, graph_exec_id, include_node_executions=True
     )
+    assert isinstance(graph_exec, execution.GraphExecutionWithNodes)
     assert len(graph_exec.node_executions) == 8
     # The last 3 executions will be a+b=4+5=9
     for i, exec_data in enumerate(graph_exec.node_executions[-3:]):
@@ -298,7 +296,7 @@ async def test_static_input_link_on_graph(server: SpinTestServer):
     logger.info("Completed test_static_input_link_on_graph")
 
 
-@pytest.mark.asyncio(scope="session")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_execute_preset(server: SpinTestServer):
     """
     Test executing a preset.
@@ -359,23 +357,22 @@ async def test_execute_preset(server: SpinTestServer):
     test_graph = await create_graph(server, test_graph, test_user)
 
     # Create preset with initial values
-    preset = backend.server.v2.library.model.CreateLibraryAgentPresetRequest(
+    preset = backend.server.v2.library.model.LibraryAgentPresetCreatable(
         name="Test Preset With Clash",
         description="Test preset with clashing input values",
-        agent_id=test_graph.id,
-        agent_version=test_graph.version,
+        graph_id=test_graph.id,
+        graph_version=test_graph.version,
         inputs={
             "dictionary": {"key1": "Hello", "key2": "World"},
             "selected_value": "key2",
         },
+        credentials={},
         is_active=True,
     )
     created_preset = await server.agent_server.test_create_preset(preset, test_user.id)
 
     # Execute preset with overriding values
     result = await server.agent_server.test_execute_preset(
-        graph_id=test_graph.id,
-        graph_version=test_graph.version,
         preset_id=created_preset.id,
         user_id=test_user.id,
     )
@@ -385,7 +382,7 @@ async def test_execute_preset(server: SpinTestServer):
     graph_exec_id = result["id"]
 
     # Wait for execution to complete
-    executions = await wait_execution(test_user.id, test_graph.id, graph_exec_id)
+    executions = await wait_execution(test_user.id, graph_exec_id)
     assert len(executions) == 4
 
     # FindInDictionaryBlock should wait for the input pin to be provided,
@@ -394,7 +391,7 @@ async def test_execute_preset(server: SpinTestServer):
     assert executions[3].output_data == {"output": ["World"]}
 
 
-@pytest.mark.asyncio(scope="session")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_execute_preset_with_clash(server: SpinTestServer):
     """
     Test executing a preset with clashing input data.
@@ -448,25 +445,24 @@ async def test_execute_preset_with_clash(server: SpinTestServer):
     test_graph = await create_graph(server, test_graph, test_user)
 
     # Create preset with initial values
-    preset = backend.server.v2.library.model.CreateLibraryAgentPresetRequest(
+    preset = backend.server.v2.library.model.LibraryAgentPresetCreatable(
         name="Test Preset With Clash",
         description="Test preset with clashing input values",
-        agent_id=test_graph.id,
-        agent_version=test_graph.version,
+        graph_id=test_graph.id,
+        graph_version=test_graph.version,
         inputs={
             "dictionary": {"key1": "Hello", "key2": "World"},
             "selected_value": "key2",
         },
+        credentials={},
         is_active=True,
     )
     created_preset = await server.agent_server.test_create_preset(preset, test_user.id)
 
     # Execute preset with overriding values
     result = await server.agent_server.test_execute_preset(
-        graph_id=test_graph.id,
-        graph_version=test_graph.version,
         preset_id=created_preset.id,
-        node_input={"selected_value": "key1"},
+        inputs={"selected_value": "key1"},
         user_id=test_user.id,
     )
 
@@ -475,7 +471,7 @@ async def test_execute_preset_with_clash(server: SpinTestServer):
     graph_exec_id = result["id"]
 
     # Wait for execution to complete
-    executions = await wait_execution(test_user.id, test_graph.id, graph_exec_id)
+    executions = await wait_execution(test_user.id, graph_exec_id)
     assert len(executions) == 4
 
     # FindInDictionaryBlock should wait for the input pin to be provided,
@@ -484,7 +480,7 @@ async def test_execute_preset_with_clash(server: SpinTestServer):
     assert executions[3].output_data == {"output": ["Hello"]}
 
 
-@pytest.mark.asyncio(scope="session")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_store_listing_graph(server: SpinTestServer):
     logger.info("Starting test_agent_execution")
     test_user = await create_test_user()
@@ -542,7 +538,5 @@ async def test_store_listing_graph(server: SpinTestServer):
         4,
     )
 
-    await assert_sample_graph_executions(
-        server.agent_server, test_graph, alt_test_user, graph_exec_id
-    )
+    await assert_sample_graph_executions(test_graph, alt_test_user, graph_exec_id)
     logger.info("Completed test_agent_execution")

@@ -27,6 +27,7 @@ import {
   cn,
   getValue,
   hasNonNullNonObjectValue,
+  isObject,
   parseKeys,
   setNestedProperty,
 } from "@/lib/utils";
@@ -82,6 +83,7 @@ export type CustomNodeData = {
   executionResults?: {
     execId: string;
     data: NodeExecutionResult["output_data"];
+    status: NodeExecutionResult["status"];
   }[];
   block_id: string;
   backend_id?: string;
@@ -93,13 +95,7 @@ export type CustomNodeData = {
 export type CustomNode = XYNode<CustomNodeData, "custom">;
 
 export const CustomNode = React.memo(
-  function CustomNode({
-    data,
-    id,
-    width,
-    height,
-    selected,
-  }: NodeProps<CustomNode>) {
+  function CustomNode({ data, id, height, selected }: NodeProps<CustomNode>) {
     const [isOutputOpen, setIsOutputOpen] = useState(
       data.isOutputOpen || false,
     );
@@ -147,21 +143,55 @@ export const CustomNode = React.memo(
       setIsAnyModalOpen?.(isModalOpen || isOutputModalOpen);
     }, [isModalOpen, isOutputModalOpen, data, setIsAnyModalOpen]);
 
-    useEffect(() => {
-      isInitialSetup.current = false;
+    const fillDefaults = useCallback((obj: any, schema: any) => {
+      // Iterate over the schema properties
+      for (const key in schema.properties) {
+        if (schema.properties.hasOwnProperty(key)) {
+          const propertySchema = schema.properties[key];
+
+          // If the property is not in the object, initialize it with the default value
+          if (!obj.hasOwnProperty(key)) {
+            if (propertySchema.default !== undefined) {
+              obj[key] = propertySchema.default;
+            } else if (propertySchema.type === "object") {
+              // Recursively fill defaults for nested objects
+              obj[key] = fillDefaults({}, propertySchema);
+            } else if (propertySchema.type === "array") {
+              // Recursively fill defaults for arrays
+              obj[key] = fillDefaults([], propertySchema);
+            }
+          } else {
+            // If the property exists, recursively fill defaults for nested objects/arrays
+            if (propertySchema.type === "object") {
+              obj[key] = fillDefaults(obj[key], propertySchema);
+            } else if (propertySchema.type === "array") {
+              obj[key] = fillDefaults(obj[key], propertySchema);
+            }
+          }
+        }
+      }
+
+      return obj;
     }, []);
 
-    const setHardcodedValues = (values: any) => {
-      updateNodeData(id, { hardcodedValues: values });
-    };
+    const setHardcodedValues = useCallback(
+      (values: any) => {
+        updateNodeData(id, { hardcodedValues: values });
+      },
+      [id, updateNodeData],
+    );
 
-    const setErrors = (errors: { [key: string]: string }) => {
-      updateNodeData(id, { errors });
-    };
+    useEffect(() => {
+      isInitialSetup.current = false;
+      setHardcodedValues(fillDefaults(data.hardcodedValues, data.inputSchema));
+    }, []);
 
-    const toggleOutput = (checked: boolean) => {
-      setIsOutputOpen(checked);
-    };
+    const setErrors = useCallback(
+      (errors: { [key: string]: string }) => {
+        updateNodeData(id, { errors });
+      },
+      [id, updateNodeData],
+    );
 
     const toggleAdvancedSettings = (checked: boolean) => {
       setIsAdvancedOpen(checked);
@@ -216,7 +246,7 @@ export const CustomNode = React.memo(
       nodeType: BlockUIType,
     ) => {
       if (!schema?.properties) return null;
-      let keys = Object.entries(schema.properties);
+      const keys = Object.entries(schema.properties);
       switch (nodeType) {
         case BlockUIType.NOTE:
           // For NOTE blocks, don't render any input handles
@@ -238,7 +268,7 @@ export const CustomNode = React.memo(
 
         default:
           const getInputPropKey = (key: string) =>
-            nodeType == BlockUIType.AGENT ? `data.${key}` : key;
+            nodeType == BlockUIType.AGENT ? `inputs.${key}` : key;
 
           return keys.map(([propKey, propSchema]) => {
             const isRequired = data.inputSchema.required?.includes(propKey);
@@ -308,46 +338,49 @@ export const CustomNode = React.memo(
           });
       }
     };
-    const handleInputChange = (path: string, value: any) => {
-      const keys = parseKeys(path);
-      const newValues = JSON.parse(JSON.stringify(data.hardcodedValues));
-      let current = newValues;
+    const handleInputChange = useCallback(
+      (path: string, value: any) => {
+        const keys = parseKeys(path);
+        const newValues = JSON.parse(JSON.stringify(data.hardcodedValues));
+        let current = newValues;
 
-      for (let i = 0; i < keys.length - 1; i++) {
-        const { key: currentKey, index } = keys[i];
-        if (index !== undefined) {
-          if (!current[currentKey]) current[currentKey] = [];
-          if (!current[currentKey][index]) current[currentKey][index] = {};
-          current = current[currentKey][index];
-        } else {
-          if (!current[currentKey]) current[currentKey] = {};
-          current = current[currentKey];
+        for (let i = 0; i < keys.length - 1; i++) {
+          const { key: currentKey, index } = keys[i];
+          if (index !== undefined) {
+            if (!current[currentKey]) current[currentKey] = [];
+            if (!current[currentKey][index]) current[currentKey][index] = {};
+            current = current[currentKey][index];
+          } else {
+            if (!current[currentKey]) current[currentKey] = {};
+            current = current[currentKey];
+          }
         }
-      }
 
-      const lastKey = keys[keys.length - 1];
-      if (lastKey.index !== undefined) {
-        if (!current[lastKey.key]) current[lastKey.key] = [];
-        current[lastKey.key][lastKey.index] = value;
-      } else {
-        current[lastKey.key] = value;
-      }
+        const lastKey = keys[keys.length - 1];
+        if (lastKey.index !== undefined) {
+          if (!current[lastKey.key]) current[lastKey.key] = [];
+          current[lastKey.key][lastKey.index] = value;
+        } else {
+          current[lastKey.key] = value;
+        }
 
-      if (!isInitialSetup.current) {
-        history.push({
-          type: "UPDATE_INPUT",
-          payload: { nodeId: id, oldValues: data.hardcodedValues, newValues },
-          undo: () => setHardcodedValues(data.hardcodedValues),
-          redo: () => setHardcodedValues(newValues),
-        });
-      }
+        if (!isInitialSetup.current) {
+          history.push({
+            type: "UPDATE_INPUT",
+            payload: { nodeId: id, oldValues: data.hardcodedValues, newValues },
+            undo: () => setHardcodedValues(data.hardcodedValues),
+            redo: () => setHardcodedValues(newValues),
+          });
+        }
 
-      setHardcodedValues(newValues);
-      const errors = data.errors || {};
-      // Remove error with the same key
-      setNestedProperty(errors, path, null);
-      setErrors({ ...errors });
-    };
+        setHardcodedValues(newValues);
+        const errors = data.errors || {};
+        // Remove error with the same key
+        setNestedProperty(errors, path, null);
+        setErrors({ ...errors });
+      },
+      [data.hardcodedValues, id, setHardcodedValues, data.errors, setErrors],
+    );
 
     const isInputHandleConnected = (key: string) => {
       return (
@@ -375,28 +408,41 @@ export const CustomNode = React.memo(
       );
     };
 
-    const handleInputClick = (key: string) => {
-      console.debug(`Opening modal for key: ${key}`);
-      setActiveKey(key);
-      const value = getValue(key, data.hardcodedValues);
-      setInputModalValue(
-        typeof value === "object" ? JSON.stringify(value, null, 2) : value,
-      );
-      setIsModalOpen(true);
-    };
+    const handleInputClick = useCallback(
+      (key: string) => {
+        console.debug(`Opening modal for key: ${key}`);
+        setActiveKey(key);
+        const value = getValue(key, data.hardcodedValues);
+        setInputModalValue(
+          typeof value === "object" ? JSON.stringify(value, null, 2) : value,
+        );
+        setIsModalOpen(true);
+      },
+      [data.hardcodedValues],
+    );
 
-    const handleModalSave = (value: string) => {
-      if (activeKey) {
-        try {
-          const parsedValue = JSON.parse(value);
-          handleInputChange(activeKey, parsedValue);
-        } catch (error) {
-          handleInputChange(activeKey, value);
+    const handleModalSave = useCallback(
+      (value: string) => {
+        if (activeKey) {
+          try {
+            const parsedValue = JSON.parse(value);
+            // Validate that the parsed value is safe before using it
+            if (isObject(parsedValue) || Array.isArray(parsedValue)) {
+              handleInputChange(activeKey, parsedValue);
+            } else {
+              // For primitive values, use the original string
+              handleInputChange(activeKey, value);
+            }
+          } catch {
+            // If JSON parsing fails, treat as plain text
+            handleInputChange(activeKey, value);
+          }
         }
-      }
-      setIsModalOpen(false);
-      setActiveKey(null);
-    };
+        setIsModalOpen(false);
+        setActiveKey(null);
+      },
+      [activeKey, handleInputChange],
+    );
 
     const handleOutputClick = () => {
       setIsOutputModalOpen(true);

@@ -1,13 +1,15 @@
+import functools
 import inspect
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator as AsyncGen
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
-    Generator,
     Generic,
     Optional,
+    Sequence,
     Type,
     TypeVar,
     cast,
@@ -17,6 +19,7 @@ from typing import (
 import jsonref
 import jsonschema
 from prisma.models import AgentBlock
+from prisma.types import AgentBlockCreateInput
 from pydantic import BaseModel
 
 from backend.data.model import NodeExecutionStats
@@ -27,6 +30,7 @@ from backend.util.settings import Config
 from .model import (
     ContributorDetails,
     Credentials,
+    CredentialsFieldInfo,
     CredentialsMetaInput,
     is_credentials_field_name,
 )
@@ -38,7 +42,7 @@ app_config = Config()
 
 BlockData = tuple[str, Any]  # Input & Output data should be a tuple of (name, data).
 BlockInput = dict[str, Any]  # Input: 1 input pin consumes 1 data.
-BlockOutput = Generator[BlockData, None, None]  # Output: 1 output pin produces n data.
+BlockOutput = AsyncGen[BlockData, None]  # Output: 1 output pin produces n data.
 CompletedBlockOutput = dict[str, list[Any]]  # Completed stream, collected as a dict.
 
 
@@ -114,11 +118,26 @@ class BlockSchema(BaseModel):
 
     @classmethod
     def validate_data(cls, data: BlockInput) -> str | None:
-        return json.validate_with_jsonschema(schema=cls.jsonschema(), data=data)
+        return json.validate_with_jsonschema(
+            schema=cls.jsonschema(),
+            data={k: v for k, v in data.items() if v is not None},
+        )
 
     @classmethod
     def get_mismatch_error(cls, data: BlockInput) -> str | None:
         return cls.validate_data(data)
+
+    @classmethod
+    def get_field_schema(cls, field_name: str) -> dict[str, Any]:
+        model_schema = cls.jsonschema().get("properties", {})
+        if not model_schema:
+            raise ValueError(f"Invalid model schema {cls}")
+
+        property_schema = model_schema.get(field_name)
+        if not property_schema:
+            raise ValueError(f"Invalid property name {field_name}")
+
+        return property_schema
 
     @classmethod
     def validate_field(cls, field_name: str, data: BlockInput) -> str | None:
@@ -126,15 +145,8 @@ class BlockSchema(BaseModel):
         Validate the data against a specific property (one of the input/output name).
         Returns the validation error message if the data does not match the schema.
         """
-        model_schema = cls.jsonschema().get("properties", {})
-        if not model_schema:
-            return f"Invalid model schema {cls}"
-
-        property_schema = model_schema.get(field_name)
-        if not property_schema:
-            return f"Invalid property name {field_name}"
-
         try:
+            property_schema = cls.get_field_schema(field_name)
             jsonschema.validate(json.to_dict(data), property_schema)
             return None
         except jsonschema.ValidationError as e:
@@ -195,6 +207,15 @@ class BlockSchema(BaseModel):
                     CredentialsMetaInput,
                 )
             )
+        }
+
+    @classmethod
+    def get_credentials_fields_info(cls) -> dict[str, CredentialsFieldInfo]:
+        return {
+            field_name: CredentialsFieldInfo.model_validate(
+                cls.get_field_schema(field_name), by_alias=True
+            )
+            for field_name in cls.get_credentials_fields().keys()
         }
 
     @classmethod
@@ -370,7 +391,7 @@ class Block(ABC, Generic[BlockSchemaInputType, BlockSchemaOutputType]):
         return cls()
 
     @abstractmethod
-    def run(self, input_data: BlockSchemaInputType, **kwargs) -> BlockOutput:
+    async def run(self, input_data: BlockSchemaInputType, **kwargs) -> BlockOutput:
         """
         Run the block with the given input data.
         Args:
@@ -388,10 +409,16 @@ class Block(ABC, Generic[BlockSchemaInputType, BlockSchemaOutputType]):
             output_name: One of the output name defined in Block's output_schema.
             output_data: The data for the output_name, matching the defined schema.
         """
-        pass
+        # --- satisfy the type checker, never executed -------------
+        if False:  # noqa: SIM115
+            yield "name", "value"  # pyright: ignore[reportMissingYield]
+        raise NotImplementedError(f"{self.name} does not implement the run method.")
 
-    def run_once(self, input_data: BlockSchemaInputType, output: str, **kwargs) -> Any:
-        for name, data in self.run(input_data, **kwargs):
+    async def run_once(
+        self, input_data: BlockSchemaInputType, output: str, **kwargs
+    ) -> Any:
+        async for item in self.run(input_data, **kwargs):
+            name, data = item
             if name == output:
                 return data
         raise ValueError(f"{self.name} did not produce any output for {output}")
@@ -440,14 +467,15 @@ class Block(ABC, Generic[BlockSchemaInputType, BlockSchemaOutputType]):
             "uiType": self.block_type.value,
         }
 
-    def execute(self, input_data: BlockInput, **kwargs) -> BlockOutput:
+    async def execute(self, input_data: BlockInput, **kwargs) -> BlockOutput:
         if error := self.input_schema.validate_data(input_data):
             raise ValueError(
                 f"Unable to execute block with invalid input data: {error}"
             )
 
-        for output_name, output_data in self.run(
-            self.input_schema(**input_data), **kwargs
+        async for output_name, output_data in self.run(
+            self.input_schema(**{k: v for k, v in input_data.items() if v is not None}),
+            **kwargs,
         ):
             if output_name == "error":
                 raise RuntimeError(output_data)
@@ -456,6 +484,22 @@ class Block(ABC, Generic[BlockSchemaInputType, BlockSchemaOutputType]):
             ):
                 raise ValueError(f"Block produced an invalid output data: {error}")
             yield output_name, output_data
+
+    def is_triggered_by_event_type(
+        self, trigger_config: dict[str, Any], event_type: str
+    ) -> bool:
+        if not self.webhook_config:
+            raise TypeError("This method can't be used on non-trigger blocks")
+        if not self.webhook_config.event_filter_input:
+            return True
+        event_filter = trigger_config.get(self.webhook_config.event_filter_input)
+        if not event_filter:
+            raise ValueError("Event filter is not configured on trigger")
+        return event_type in [
+            self.webhook_config.event_format.format(event=k)
+            for k in event_filter
+            if event_filter[k] is True
+        ]
 
 
 # ======================= Block Helper Functions ======================= #
@@ -475,12 +519,12 @@ async def initialize_blocks() -> None:
         )
         if not existing_block:
             await AgentBlock.prisma().create(
-                data={
-                    "id": block.id,
-                    "name": block.name,
-                    "inputSchema": json.dumps(block.input_schema.jsonschema()),
-                    "outputSchema": json.dumps(block.output_schema.jsonschema()),
-                }
+                data=AgentBlockCreateInput(
+                    id=block.id,
+                    name=block.name,
+                    inputSchema=json.dumps(block.input_schema.jsonschema()),
+                    outputSchema=json.dumps(block.output_schema.jsonschema()),
+                )
             )
             continue
 
@@ -503,6 +547,25 @@ async def initialize_blocks() -> None:
             )
 
 
-def get_block(block_id: str) -> Block | None:
+# Note on the return type annotation: https://github.com/microsoft/pyright/issues/10281
+def get_block(block_id: str) -> Block[BlockSchema, BlockSchema] | None:
     cls = get_blocks().get(block_id)
     return cls() if cls else None
+
+
+@functools.cache
+def get_webhook_block_ids() -> Sequence[str]:
+    return [
+        id
+        for id, B in get_blocks().items()
+        if B().block_type in (BlockType.WEBHOOK, BlockType.WEBHOOK_MANUAL)
+    ]
+
+
+@functools.cache
+def get_io_block_ids() -> Sequence[str]:
+    return [
+        id
+        for id, B in get_blocks().items()
+        if B().block_type in (BlockType.INPUT, BlockType.OUTPUT)
+    ]
